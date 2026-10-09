@@ -9,32 +9,25 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 import sqlite3
 import os
+import time
 
 # ──────────────────────────────────────────────
-# Cấu hình cơ sở dữ liệu
+# Cấu hình cơ sở dữ liệu – dùng 1 connection duy nhất
 # ──────────────────────────────────────────────
-DB_PATH = os.path.join(os.path.dirname(__file__), "ngayhoi.db")
+DB_PATH = os.getenv("DB_PATH", os.path.join(os.path.dirname(__file__), "ngayhoi.db"))
 
-
-def init_db() -> None:
-    """Khởi tạo CSDL và bảng dang_ky nếu chưa tồn tại."""
-    conn = sqlite3.connect(DB_PATH)
-    cursor = conn.cursor()
-    cursor.execute(
-        """
-        CREATE TABLE IF NOT EXISTS dang_ky (
-            id       INTEGER PRIMARY KEY AUTOINCREMENT,
-            ma_sv    TEXT    NOT NULL,
-            ma_phien TEXT    NOT NULL,
-            UNIQUE (ma_sv, ma_phien)
-        )
-        """
+db = sqlite3.connect(DB_PATH, check_same_thread=False, timeout=10.0, isolation_level=None)
+db.execute("PRAGMA journal_mode=WAL")
+db.execute(
+    """
+    CREATE TABLE IF NOT EXISTS dang_ky (
+        id       INTEGER PRIMARY KEY AUTOINCREMENT,
+        ma_sv    TEXT    NOT NULL,
+        ma_phien TEXT    NOT NULL,
+        UNIQUE (ma_sv, ma_phien)
     )
-    conn.commit()
-    conn.close()
-
-
-init_db()
+    """
+)
 
 # ──────────────────────────────────────────────
 # Khởi tạo ứng dụng FastAPI
@@ -85,20 +78,49 @@ def dang_ky(body: DangKy):
     - **409 Conflict**: Cặp (ma_sv, ma_phien) đã tồn tại – ràng buộc UNIQUE.
     - **422 Unprocessable Entity**: FastAPI/Pydantic tự trả nếu thiếu trường.
     """
-    conn = sqlite3.connect(DB_PATH)
+    
+    # Mở connection mới cho mỗi request ở môi trường thật để tránh lỗi chia sẻ connection của sqlite3.
+    # Khi test dùng :memory: thì phải dùng connection dùng chung (db).
+    conn = db if DB_PATH == ":memory:" else sqlite3.connect(DB_PATH, timeout=15.0)
+    if DB_PATH != ":memory:":
+        conn.execute("PRAGMA journal_mode=WAL")
+        
     try:
-        cursor = conn.cursor()
-        cursor.execute(
-            "INSERT INTO dang_ky (ma_sv, ma_phien) VALUES (?, ?)",
-            (body.ma_sv, body.ma_phien),
+        cursor = conn.execute(
+            """
+            INSERT INTO dang_ky (ma_sv, ma_phien) 
+            SELECT ?, ? 
+            WHERE (SELECT COUNT(*) FROM dang_ky WHERE ma_phien = ?) < 30
+            """,
+            (body.ma_sv, body.ma_phien, body.ma_phien),
         )
+        if cursor.rowcount == 0:
+            # Nếu insert 0 dòng -> đã đầy 30 chỗ (hoặc có thể user đã đăng ký rồi nhưng phiên đầy)
+            # Dòng 4 spec: Ưu tiên trả mã DA_DANG_KY nếu user đã có trong phiên
+            row = conn.execute(
+                "SELECT 1 FROM dang_ky WHERE ma_sv = ? AND ma_phien = ?",
+                (body.ma_sv, body.ma_phien)
+            ).fetchone()
+            
+            if row:
+                raise HTTPException(
+                    status_code=status.HTTP_409_CONFLICT,
+                    detail="DA_DANG_KY",
+                )
+            else:
+                raise HTTPException(
+                    status_code=status.HTTP_409_CONFLICT,
+                    detail="HET_CHO",
+                )
+                
         conn.commit()
         return {"ok": True}
     except sqlite3.IntegrityError:
-        # Ràng buộc UNIQUE bị vi phạm → 409 Conflict
+        # Ràng buộc UNIQUE bị vi phạm (khi phiên chưa đầy)
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
             detail="DA_DANG_KY",
         )
     finally:
-        conn.close()  # Luôn đóng connection, tránh database locked
+        if DB_PATH != ":memory:":
+            conn.close()
