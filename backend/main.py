@@ -124,3 +124,30 @@ def dang_ky(body: DangKy):
     finally:
         if DB_PATH != ":memory:":
             conn.close()
+
+
+@app.get(
+    "/api/con-cho",
+    summary="Kiểm tra số chỗ còn lại của phiên",
+    responses={
+        200: {"description": "Số chỗ còn lại"},
+    },
+)
+def lay_so_cho_con_lai(ma_phien: str):
+    """
+    Trả về số chỗ còn lại của phiên tuyển dụng (sức chứa 30 chỗ).
+    """
+    conn = db if DB_PATH == ":memory:" else sqlite3.connect(DB_PATH, timeout=15.0)
+    try:
+        cursor = conn.execute(
+            "SELECT COUNT(*) FROM dang_ky WHERE ma_phien = ?",
+            (ma_phien,),
+        )
+        row = cursor.fetchone()
+        da_dang_ky = row[0] if row else 0
+        con_cho = max(0, 30 - da_dang_ky)
+        return {"con_cho": con_cho}
+    finally:
+        if DB_PATH != ":memory:":
+            conn.close()
+
