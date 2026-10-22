@@ -1,0 +1,13 @@
+# Đặt tại .github/workflows/test.yml
+name: test
+on: [pull_request]
+jobs:
+  pytest:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.11" }
+      - run: pip install fastapi httpx pytest
+      - run: python -m pytest -q
+        working-directory: backend
