@@ -90,7 +90,7 @@ def dang_ky(body: DangKy):
             """
             INSERT INTO dang_ky (ma_sv, ma_phien) 
             SELECT ?, ? 
-            WHERE (SELECT COUNT(*) FROM dang_ky WHERE ma_phien = ?) < 30
+            WHERE (SELECT COUNT(*) FROM dang_ky WHERE ma_phien = ?) < 31
             """,
             (body.ma_sv, body.ma_phien, body.ma_phien),
         )
